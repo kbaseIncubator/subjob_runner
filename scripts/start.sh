@@ -23,4 +23,5 @@ pip install -r dev-requirements.txt
 
 echo "---"
 echo 'Starting server..'
-FLASK_APP=src/subjob_coordinator/server.py flask run --host=0.0.0.0
+export CALLBACK_SERVER_PORT=4176
+FLASK_APP=src/subjob_coordinator/server.py flask run --host=0.0.0.0 --port=4176
