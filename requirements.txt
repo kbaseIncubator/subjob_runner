@@ -3,3 +3,4 @@ simplejson==3.16.0
 python-dotenv==0.9.1
 requests==2.19.1
 jsonschema==2.6.0
+Flask-Session==0.3.1

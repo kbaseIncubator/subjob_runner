@@ -2,18 +2,21 @@
 import flask
 import os
 import re
+import time
 from uuid import uuid4
 import traceback
-import json
 import jsonschema
 import jsonschema.exceptions
+from flask_session import Session
 
 from . import schemas
 
 app = flask.Flask(__name__)
 app.config['DEBUG'] = os.environ.get('FLASK_DEBUG', True)
 app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', str(uuid4()))
+app.config['SESSION_TYPE'] = 'filesystem'
 app.url_map.strict_slashes = False  # allow both `get /v1/` and `get /v1`
+Session(app)
 
 
 @app.route('/', methods=['GET', 'POST'])
@@ -31,37 +34,76 @@ def root():
 
     In 'Module._<method>_submit', we extract out the <method> name
     """
-    json_data = json.loads(flask.request.get_data())
+    # Initialize some session data if it's not present
+    if 'provenance' not in flask.session:
+        init_provenance()
+    if 'job_statuses' not in flask.session:
+        flask.session['job_statuses'] = {}  # type: dict
+    # Validate the JSON body data using jsonschema
+    json_data = flask.request.json
     jsonschema.validate(json_data, schemas.request_rpc)
-    req_id = json_data.get('id', str(uuid4()))
     (module, method) = json_data['method'].split('.')
-    params = json_data.get('params')
-    resp = {
-        'id': req_id,
-        'module': module,
-        'method': method,
-        'params': params
-    }
     if module == 'CallbackServer':
         if method == 'status':
-            resp['state'] = 'OK'
+            return flask.jsonify({'state': 'OK'})
         elif method == 'get_provenance':
-            # TODO
-            resp['action_to_take'] = 'provenance'
+            return get_provenance()
     else:
         # Given: 'AssemblyUtil._save_assembly_as_fasta_submit'
         # sub_methods will be ('save_assembly_as_fasta',)
         sub_methods = re.match(r'^_(.+)_submit$', method)
         if sub_methods:
-            # TODO start subjob
-            resp['action_to_take'] = 'submit_subjob'
-            resp['submethod'] = sub_methods.groups()[0]
+            sub_method = sub_methods.groups()[0]
+            context = json_data['context']
+            return start_subjob(module, sub_method, context)
         elif method == '_check_job':
-            # TODO check subjob by id
             jsonschema.validate(json_data, schemas.check_job_method)
-            resp['job_id'] = json_data['params'][0]
-            resp['action_to_take'] = 'check_job'
-    return flask.jsonify(resp)
+            job_id = json_data['params'][0]
+            return check_subjob(job_id)
+    return (flask.jsonify({'error': 'Unknown method'}), 400)
+
+
+def check_subjob(job_id):
+    if job_id not in flask.session['job_statuses']:
+        resp = {'error': 'No such job with ID ' + job_id}
+        return (flask.jsonify(resp), 400)
+    else:
+        status = flask.session['job_statuses'][job_id]
+        resp = {'status': status}
+        return flask.jsonify(resp)
+
+
+def start_subjob(module, method, context):
+    # TODO run async process to pull image from docker hub
+    #      then build and launch the container with the parameters
+    #      and finally update job statuses with results
+    flask.session['provenance']['subactions'].append({
+        'name': module + '.' + method,
+        'ver': context['service_ver'],
+        'code_url': '<url>',  # TODO
+        'commit': '<hash>'  # TODO
+    })
+    job_id = str(uuid4())
+    flask.session['job_statuses'][job_id] = 'pending'
+    return flask.jsonify({"job_id": job_id})
+
+
+def init_provenance():
+    # Setting the current running module data from the env. Not sure if this is the right approach.
+    flask.session['provenance'] = {
+        'epoch': time.time() * 1000,
+        'description': 'KBase SDK method run via the KBase Execution Engine',
+        'service': os.environ['SERVICE_NAME'],
+        'method': os.environ['SERVICE_METHOD'],
+        'service_ver': os.environ['SERVICE_VERSION'],
+        'method_params': os.environ['METHOD_PARAMS'],
+        'input_ws_objects': os.environ['INPUT_WORKSPACE_REFS'],
+        'subactions': []
+    }
+
+
+def get_provenance():
+    return flask.jsonify(flask.session['provenance'])
 
 
 @app.errorhandler(jsonschema.exceptions.ValidationError)
@@ -112,7 +154,3 @@ def log_response(response):
         print('Body: ' + flask.request.get_data().decode())
         print(response.status)
     return response
-
-
-if __name__ == '__main__':
-    app.run(port=0)
