@@ -1,4 +1,4 @@
-# KBase Subjob Coordinator
+# KBase Module Subjob Runner
 
 > Work in progress
 
